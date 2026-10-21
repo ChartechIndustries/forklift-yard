@@ -32,6 +32,7 @@ func _ready() -> void:
 	add_child(col)
 	model = load("res://models/contestant.glb").instantiate()
 	add_child(model)
+	MP5.attach(model)
 	var aps := model.find_children("*", "AnimationPlayer", true, false)
 	if aps.size() > 0:
 		anim = aps[0]

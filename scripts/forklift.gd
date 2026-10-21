@@ -68,6 +68,7 @@ func _ready() -> void:
 	driver = load("res://models/contestant.glb").instantiate()
 	driver.position = SEAT
 	driver.rotation.y = PI
+	MP5.attach(driver)
 	driver.visible = false
 	add_child(driver)
 	var aps := driver.find_children("*", "AnimationPlayer", true, false)

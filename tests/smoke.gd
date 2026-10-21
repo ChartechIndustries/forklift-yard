@@ -21,6 +21,9 @@ func _initialize() -> void:
 	check(lvl.davids.size() > 0, "davids spawned")
 	check(lvl.oil_patches.size() >= 4, "oil patches exist")
 	check(get_nodes_in_group("cones").size() > 5 and get_nodes_in_group("barrels").size() > 3, "cones and barrels exist")
+	for dd in lvl.davids:
+		check(dd.model.find_child("MP5", true, false) != null, "david has MP5")
+	check(lvl.player.model.find_child("MP5", true, false) != null, "player walker has MP5")
 	var m0: int = lvl.mess
 
 	# David: real forklift collision
@@ -36,10 +39,12 @@ func _initialize() -> void:
 			break
 	fk.auto_throttle = 0.0
 	check(d.is_down(), "david knocked down by forklift")
+	check(d.model.find_child("MP5", true, false) != null and d.model.get_parent() == d.ragdoll, "MP5 on ragdoll model")
 	check(lvl.mess >= m0 + 250, "mess rose for david (%d)" % lvl.mess)
 	for i in 60 * 5:
 		await physics_frame
 	check(not d.is_down(), "david respawned")
+	check(d.model.find_child("MP5", true, false) != null, "MP5 after respawn")
 
 	# pallet break (direct crash call)
 	var pallets := get_nodes_in_group("pallets")

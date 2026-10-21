@@ -41,6 +41,7 @@ func _ready() -> void:
 
 	model = load("res://models/contestant.glb").instantiate()
 	add_child(model)
+	MP5.attach(model)
 
 	pivot = Node3D.new()
 	pivot.position.y = 1.55
