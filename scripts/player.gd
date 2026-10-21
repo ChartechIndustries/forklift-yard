@@ -124,6 +124,11 @@ func _physics_process(delta: float) -> void:
 	elif Input.is_physical_key_pressed(KEY_SPACE):
 		velocity.y = JUMP_VELOCITY
 	move_and_slide()
+	for i in get_slide_collision_count():
+		var c := get_slide_collision(i)
+		var rb := c.get_collider() as RigidBody3D
+		if rb and rb.freeze == false:
+			rb.apply_impulse(-c.get_normal() * 2.0 * minf(rb.mass, 20.0) * 0.25, c.get_position() - rb.global_position)
 
 	# the model faces +Z; turn it toward the travel direction
 	if dir.length() > 0.1:

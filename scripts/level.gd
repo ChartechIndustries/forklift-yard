@@ -21,6 +21,14 @@ const ENTER_RANGE := 2.6
 const INBOUND_SLOTS := [Vector3(-10, 0, 6), Vector3(-8, 0, 6), Vector3(-6, 0, 6), Vector3(-10, 0, 8.5),
 	Vector3(-8, 0, 8.5), Vector3(-6, 0, 8.5)]
 const BAYS := {"A": Vector3(7, 0, 5), "B": Vector3(7, 0, 0.5), "C": Vector3(9, 1.2, -10.5)}
+const MAX_DEBRIS := 90
+const OIL_SPOTS := [Vector3(1.5, -0.5, 1.7), Vector3(4.5, 8.5, 1.5), Vector3(-11, 1, 1.6), Vector3(10.5, 2.5, 1.4)]
+const CONE_SPOTS := [Vector2(3, 3), Vector2(4.2, 3.4), Vector2(5.4, 3), Vector2(-3, -4), Vector2(-2, -5.2),
+	Vector2(0, -6), Vector2(1.2, -5.5), Vector2(-1, 10), Vector2(1, 10), Vector2(3, 10), Vector2(10.5, -1), Vector2(12, 1)]
+const BARREL_SPOTS := [Vector3(12, 7, 0), Vector3(12.7, 7.6, 0), Vector3(11.9, 8.3, 0), Vector3(4, -3.2, 1),
+	Vector3(-13, -6, 0), Vector3(-13, -5.2, 0), Vector3(-0.5, 4.5, 1)]   # z = 1: leaks oil
+const DAVID_SPOTS := [Vector3(-1, 0.1, 4), Vector3(4, 0.1, -1), Vector3(-3, 0.1, 8)]
+const OOFS := ["OOF!", "BONK!", "DAVID!!", "WHOA!", "OH NO", "YEET!"]
 const CRATE_COLORS := [Color(0.55, 0.38, 0.2), Color(0.25, 0.45, 0.7), Color(0.7, 0.25, 0.2), Color(0.35, 0.55, 0.3)]
 
 var player: CharacterBody3D
@@ -31,6 +39,12 @@ var money := 0
 var delivered := 0
 var last_bay := ""
 
+var mess := 0
+var mess_shown := 0.0
+var oil_patches: Array = []   # Vector3(x, z, radius); shared with the forklift
+var debris: Array = []
+var davids: Array = []
+var hud_mess: Label
 var hud_job: Label
 var hud_help: Label
 var hud_prompt: Label
@@ -49,6 +63,10 @@ func _ready() -> void:
 	forklift.rotation.y = deg_to_rad(20)
 	add_child(forklift)
 	forklift.pallet_dropped.connect(_on_pallet_dropped)
+	forklift.crashed.connect(_on_crash)
+	forklift.oil_entered.connect(func(): _add_mess(5, forklift.global_position, "SLIP"))
+	forklift.oil_patches = oil_patches
+	_mess_props()
 	for i in 4:
 		_spawn_pallet()
 	player = CharacterBody3D.new()
@@ -104,7 +122,7 @@ func _props() -> void:
 	var hazard := _mat(Color(0.95, 0.65, 0.05), 0.6)
 
 	for p in [Vector3(-5, 0, -2), Vector3(-6.2, 0, -2), Vector3(-5.6, 1.1, -2)]:
-		_box(p + Vector3(0, 0.55, 0), Vector3(1.1, 1.1, 1.1), crate)
+		_rigid_crate(p + Vector3(0, 0.55, 0), 1.1)
 	# pallet racks
 	for x in [-10.0, -6.0, -2.0]:
 		for z in [-9.0, -7.6]:
@@ -186,7 +204,9 @@ func _spawn_pallet() -> void:
 		_part(pallet, Vector3(0, 0.125, -0.42 + i * 0.21), Vector3(1.0, 0.03, 0.15), wood)
 	for x in [-0.45, 0.0, 0.45]:
 		_part(pallet, Vector3(x, 0.055, 0), Vector3(0.1, 0.11, 1.0), wood)
-	var c := _mat(CRATE_COLORS[randi() % CRATE_COLORS.size()], 0.75)
+	var ccol: Color = CRATE_COLORS[randi() % CRATE_COLORS.size()]
+	pallet.set_meta("crate_color", ccol)
+	var c := _mat(ccol, 0.75)
 	_part(pallet, Vector3(0, 0.59, 0), Vector3(0.9, 0.9, 0.9), c)
 	var band := _mat(Color(0.1, 0.1, 0.1), 0.6)
 	_part(pallet, Vector3(0, 0.59, 0), Vector3(0.92, 0.06, 0.92), band)
@@ -273,6 +293,13 @@ func _hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	hud_job = _label(layer, Vector2(24, 20), 26)
+	hud_mess = _label(layer, Vector2(0, 0), 40)
+	hud_mess.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	hud_mess.offset_left = -420
+	hud_mess.offset_right = -24
+	hud_mess.offset_top = 14
+	hud_mess.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	hud_mess.add_theme_color_override("font_color", Color(1.0, 0.55, 0.1))
 	hud_help = _label(layer, Vector2(0, 0), 18)
 	hud_help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	hud_help.offset_left = 24
@@ -309,6 +336,8 @@ func _flash(text: String, col: Color) -> void:
 
 func _process(delta: float) -> void:
 	job_time += delta
+	mess_shown = move_toward(mess_shown, mess, maxf(40.0, absf(mess - mess_shown) * 4.0) * delta)
+	hud_mess.text = "MESS  %d" % int(mess_shown)
 	msg_time -= delta
 	hud_msg.visible = msg_time > 0.0
 	hud_job.text = "JOB TICKET:  Move a pallet from INBOUND to  BAY %s\nTime %d:%02d     Pay $%d     Delivered %d" % [
@@ -421,3 +450,219 @@ func _autotest(out_dir: String) -> void:
 	await _wait(0.5)
 	await _shot(out_dir, "f6_walking_again")
 	get_tree().quit()
+
+
+# ---------------- mess ----------------
+
+func _mess_props() -> void:
+	for sp in OIL_SPOTS:
+		_oil_patch(Vector3(sp.x, 0, sp.y), sp.z)
+	# crate stacks: pyramid and tower
+	var base := Vector3(4.5, 0, -5.2)
+	for row in 3:
+		for i in 3 - row:
+			_rigid_crate(base + Vector3((i - (2 - row) * 0.5) * 1.06, 0.5 + row * 1.003, 0), 1.0)
+	for i in 4:
+		_rigid_crate(Vector3(-12.5, 0.5 + i * 1.003, -2.0), 1.0)
+	for sp in CONE_SPOTS:
+		_cone(Vector3(sp.x, 0.35, sp.y))
+	for sp in BARREL_SPOTS:
+		_barrel(Vector3(sp.x, 0.46, sp.y), sp.z > 0.5)
+	for i in DAVID_SPOTS.size():
+		var d := CharacterBody3D.new()
+		d.set_script(load("res://scripts/david.gd"))
+		d.position = DAVID_SPOTS[i]
+		add_child(d)
+		davids.append(d)
+
+
+func _rigid(pos: Vector3, size: Vector3, mass: float, m: Material, group: String, pts: int, shape: Shape3D = null) -> RigidBody3D:
+	var rb := RigidBody3D.new()
+	rb.mass = mass
+	rb.position = pos
+	var pm := PhysicsMaterial.new()
+	pm.friction = 0.8
+	pm.bounce = 0.1
+	rb.physics_material_override = pm
+	rb.add_to_group(group)
+	rb.set_meta("pts", pts)
+	add_child(rb)
+	if m != null:
+		_part(rb, Vector3.ZERO, size, m)
+	var cs := CollisionShape3D.new()
+	if shape == null:
+		var bs := BoxShape3D.new()
+		bs.size = size
+		shape = bs
+	cs.shape = shape
+	rb.add_child(cs)
+	return rb
+
+
+func _rigid_crate(pos: Vector3, size: float) -> RigidBody3D:
+	var col: Color = CRATE_COLORS[randi() % CRATE_COLORS.size()]
+	var rb := _rigid(pos, Vector3.ONE * size, 25.0 * size, _mat(col, 0.8), "crates", 10)
+	rb.set_meta("color", col)
+	return rb
+
+
+func _cone(pos: Vector3) -> void:
+	var sh := CylinderShape3D.new()
+	sh.radius = 0.19
+	sh.height = 0.7
+	var rb := _rigid(pos, Vector3.ONE, 1.5, null, "cones", 20, sh)
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.03
+	cm.bottom_radius = 0.17
+	cm.height = 0.7
+	cm.material = _mat(Color(1.0, 0.4, 0.05), 0.6)
+	mi.mesh = cm
+	rb.add_child(mi)
+	_part(rb, Vector3(0, -0.33, 0), Vector3(0.42, 0.04, 0.42), _mat(Color(0.12, 0.12, 0.12), 0.8))
+
+
+func _barrel(pos: Vector3, leaky: bool) -> void:
+	var col := Color(0.75, 0.12, 0.1) if leaky else Color(0.15, 0.3, 0.65)
+	var sh := CylinderShape3D.new()
+	sh.radius = 0.3
+	sh.height = 0.92
+	var rb := _rigid(pos, Vector3.ONE, 14.0, null, "barrels", 30, sh)
+	rb.set_meta("leaky", leaky)
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.3
+	cm.bottom_radius = 0.3
+	cm.height = 0.92
+	cm.material = _mat(col, 0.5, 0.3)
+	mi.mesh = cm
+	rb.add_child(mi)
+	for y in [-0.25, 0.25]:
+		var ring := MeshInstance3D.new()
+		var rm := CylinderMesh.new()
+		rm.top_radius = 0.315
+		rm.bottom_radius = 0.315
+		rm.height = 0.05
+		rm.material = _mat(col.darkened(0.4), 0.4, 0.5)
+		ring.mesh = rm
+		ring.position.y = y
+		rb.add_child(ring)
+
+
+func _oil_patch(pos: Vector3, radius: float) -> void:
+	var m := _mat(Color(0.02, 0.02, 0.03), 0.05, 0.8)
+	var blobs := [[Vector2.ZERO, 1.0], [Vector2(0.45, 0.2) * radius, 0.6], [Vector2(-0.35, -0.4) * radius, 0.55]]
+	var y := 0.012 + 0.002 * oil_patches.size()
+	for b in blobs:
+		var mi := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = radius * b[1]
+		cm.bottom_radius = radius * b[1]
+		cm.height = 0.01
+		cm.material = m
+		mi.mesh = cm
+		mi.position = pos + Vector3(b[0].x, y, b[0].y)
+		add_child(mi)
+	oil_patches.append(Vector3(pos.x, pos.z, radius * 0.9))
+
+
+func _add_mess(pts: int, at: Vector3, text := "") -> void:
+	mess += pts
+	if text != "":
+		_popup("%s +%d" % [text, pts], at + Vector3(0, 1.6, 0), Color(1.0, 0.6, 0.15))
+
+
+func _popup(text: String, pos: Vector3, col: Color) -> void:
+	var l := Label3D.new()
+	l.text = text
+	l.position = pos
+	l.font_size = 72
+	l.pixel_size = 0.006
+	l.modulate = col
+	l.outline_size = 20
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.no_depth_test = true
+	add_child(l)
+	var tw := l.create_tween()
+	tw.tween_property(l, "position:y", pos.y + 1.5, 1.2)
+	tw.parallel().tween_property(l, "modulate:a", 0.0, 1.2).set_delay(0.5)
+	tw.tween_callback(l.queue_free)
+
+
+func _on_crash(o: Object, spd: float, dir: Vector3, point: Vector3) -> void:
+	if not (o is Node) or not is_instance_valid(o):
+		return
+	var n := o as Node
+	var now := Time.get_ticks_msec()
+	if n.has_meta("hit_ms") and now - int(n.get_meta("hit_ms")) < 400:
+		return
+	n.set_meta("hit_ms", now)
+	if n.is_in_group("david"):
+		if spd >= 1.5 and not n.is_down():
+			n.knock(dir, spd)
+			_add_mess(250, n.global_position, OOFS[randi() % OOFS.size()])
+			_flash("David has left the building", Color(1, 0.8, 0.3))
+	elif n.is_in_group("pallets"):
+		if spd >= 2.5 and n != forklift.carried:
+			_break_pallet(n as Node3D, dir, spd)
+	elif n is RigidBody3D:
+		var rb := n as RigidBody3D
+		if n.is_in_group("ragdolls"):
+			rb.apply_impulse(dir * spd * rb.mass * 0.5, point - rb.global_position)
+			return
+		rb.apply_impulse(dir * spd * rb.mass * 1.1 + Vector3(0, rb.mass * 0.5, 0), point - rb.global_position)
+		if not rb.has_meta("scored"):
+			rb.set_meta("scored", true)
+			_add_mess(int(rb.get_meta("pts", 0)), rb.global_position, "")
+		if n.is_in_group("crates") and spd >= 3.8:
+			_smash_crate(rb, dir, spd)
+		elif n.is_in_group("barrels") and spd >= 3.5 and rb.get_meta("leaky", false) and not rb.has_meta("leaked"):
+			rb.set_meta("leaked", true)
+			_oil_patch(Vector3(rb.global_position.x + dir.x, 0, rb.global_position.z + dir.z), 1.5)
+			_add_mess(50, rb.global_position, "SPILL")
+
+
+func _debris_box(pos: Vector3, size: Vector3, col: Color, vel: Vector3) -> void:
+	var rb := _rigid(pos, size, maxf(1.0, size.x * size.y * size.z * 80.0), _mat(col, 0.8), "debris", 0)
+	rb.linear_velocity = vel
+	rb.angular_velocity = Vector3(randf_range(-5, 5), randf_range(-5, 5), randf_range(-5, 5))
+	debris.append(rb)
+	var tw := rb.create_tween()
+	tw.tween_interval(25.0)
+	tw.tween_callback(rb.queue_free)
+	debris = debris.filter(func(d): return is_instance_valid(d))
+	while debris.size() > MAX_DEBRIS:
+		debris.pop_front().queue_free()
+
+
+func _break_pallet(p: Node3D, dir: Vector3, spd: float) -> void:
+	var xf := p.global_transform
+	var col: Color = p.get_meta("crate_color", CRATE_COLORS[0])
+	p.remove_from_group("pallets")
+	p.queue_free()
+	var kick := dir * spd * 0.7
+	for ix in 2:
+		for iy in 2:
+			for iz in 2:
+				var lp := Vector3((ix - 0.5) * 0.45, 0.32 + iy * 0.45, (iz - 0.5) * 0.45)
+				_debris_box(xf * lp, Vector3.ONE * 0.4, col, kick + Vector3(randf_range(-1.5, 1.5), randf_range(1, 4), randf_range(-1.5, 1.5)))
+	var wood := Color(0.62, 0.48, 0.3)
+	for i in 5:
+		_debris_box(xf * Vector3(0, 0.15 + i * 0.05, -0.42 + i * 0.21), Vector3(1.0, 0.05, 0.15), wood,
+			kick + Vector3(randf_range(-2, 2), randf_range(2, 5), randf_range(-2, 2)))
+	for x in [-0.45, 0.0, 0.45]:
+		_debris_box(xf * Vector3(x, 0.4, 0), Vector3(0.1, 0.1, 1.0), wood, kick + Vector3(randf_range(-2, 2), randf_range(2, 4), randf_range(-2, 2)))
+	_add_mess(100, xf.origin, "CRASH")
+	_popup("PALLET DOWN", xf.origin + Vector3(0, 2.4, 0), Color(1, 0.4, 0.3))
+	get_tree().create_timer(8.0).timeout.connect(_spawn_pallet)
+
+
+func _smash_crate(rb: RigidBody3D, dir: Vector3, spd: float) -> void:
+	var xf := rb.global_transform
+	var col: Color = rb.get_meta("color", CRATE_COLORS[0])
+	rb.queue_free()
+	for ix in 2:
+		for iy in 2:
+			var lp := Vector3((ix - 0.5) * 0.4, (iy - 0.5) * 0.4, 0)
+			_debris_box(xf * lp, Vector3.ONE * 0.36, col, dir * spd * 0.6 + Vector3(randf_range(-2, 2), randf_range(1, 4), randf_range(-2, 2)))
+	_add_mess(40, xf.origin, "SMASH")

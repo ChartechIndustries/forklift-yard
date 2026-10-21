@@ -4,6 +4,8 @@ extends CharacterBody3D
 ## and raising; they are set down by lowering the forks all the way.
 
 signal pallet_dropped(pallet: Node3D)
+signal crashed(collider: Object, speed: float, dir: Vector3, point: Vector3)
+signal oil_entered
 
 const MAX_SPEED := 4.5
 const MAX_REVERSE := 2.5
@@ -30,6 +32,10 @@ var carried: Node3D = null
 # autotest overrides (null = read the keyboard)
 var auto_throttle = null
 var auto_lift = null
+# oil patches (Vector3: x, z, radius), shared with the level
+var oil_patches: Array = []
+var slip := false
+var drift := Vector3.ZERO
 
 var model: Node3D
 var carriage: Node3D
@@ -146,11 +152,18 @@ func _physics_process(delta: float) -> void:
 	var lift_in: float = auto_lift if auto_lift != null else _key(KEY_R) - _key(KEY_F)
 	var braking := _key(KEY_SPACE) > 0.0
 
+	# --- oil: low grip, weak brakes ---
+	var on_oil := _on_oil()
+	if on_oil and not slip:
+		oil_entered.emit()
+	slip = on_oil
+	var grip := 0.3 if slip else 1.0
+
 	# --- speed: throttle against the direction of travel brakes first ---
 	if braking:
-		speed = move_toward(speed, 0.0, BRAKE * delta)
+		speed = move_toward(speed, 0.0, BRAKE * grip * delta)
 	elif throttle != 0.0:
-		var rate := BRAKE if sign(throttle) != sign(speed) and abs(speed) > 0.1 else ACCEL
+		var rate := BRAKE * grip if sign(throttle) != sign(speed) and abs(speed) > 0.1 else ACCEL
 		speed = clamp(speed + throttle * rate * delta, -MAX_REVERSE, MAX_SPEED)
 	else:
 		speed = move_toward(speed, 0.0, COAST * delta)
@@ -158,14 +171,37 @@ func _physics_process(delta: float) -> void:
 	var steer_target := steer_in * MAX_STEER
 	steer = move_toward(steer, steer_target, STEER_RATE * delta)
 	rotation.y += speed / WHEELBASE * tan(steer) * delta
+	if slip and abs(speed) > 0.8:
+		rotation.y += sin(t * 2.3) * 0.9 * abs(speed) / MAX_SPEED * delta * 2.0   # fishtail
 
 	var fwd := -global_transform.basis.z
-	velocity.x = fwd.x * speed
-	velocity.z = fwd.z * speed
+	var want := Vector3(fwd.x * speed, 0, fwd.z * speed)
+	if slip:
+		drift = drift.lerp(want, clamp(1.0 * delta, 0.0, 1.0))   # keeps sliding the old way
+	elif (drift - want).length() < 0.3:
+		drift = want
+	else:
+		drift = drift.lerp(want, clamp(5.0 * delta, 0.0, 1.0))
+	velocity.x = drift.x
+	velocity.z = drift.z
 	velocity.y = 0.0 if is_on_floor() else velocity.y - gravity * delta
+	var pre := absf(speed) if not slip else maxf(absf(speed), Vector3(drift.x, 0, drift.z).length())
 	move_and_slide()
 	if is_on_wall():
-		speed *= 0.5
+		var hard := false
+		for i in get_slide_collision_count():
+			var c := get_slide_collision(i)
+			if c.get_normal().y > 0.7:
+				continue
+			var o := c.get_collider()
+			if not (o is RigidBody3D or o is CharacterBody3D):
+				hard = true
+			var push := -c.get_normal()
+			push.y = 0.0
+			push = (push.normalized() + fwd * sign(speed)).normalized()
+			crashed.emit(o, pre, push, c.get_position())
+		speed *= 0.5 if hard else 0.93
+		drift = Vector3(velocity.x, 0, velocity.z)
 
 	# --- forks ---
 	var prev_lift := lift
@@ -186,6 +222,13 @@ func _physics_process(delta: float) -> void:
 
 	pivot.rotation = Vector3(cam_pitch, cam_yaw, 0)
 	spring.spring_length = lerp(spring.spring_length, zoom, 8.0 * delta)
+
+
+func _on_oil() -> bool:
+	for o in oil_patches:
+		if Vector2(global_position.x - o.x, global_position.z - o.y).length() < o.z:
+			return true
+	return false
 
 
 func _try_pickup() -> void:
